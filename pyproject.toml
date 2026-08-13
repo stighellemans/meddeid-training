@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meddeid-training"
+version = "0.1.0"
+description = "One-stage and publication-protocol training for MedDeID"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "AGPL-3.0-only"
+authors = [{name = "Stig Hellemans"}]
+keywords = ["de-identification", "clinical-nlp", "transformers", "training"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+dependencies = ["meddeid-core>=0.1,<0.2", "meddeid-eval>=0.2,<0.3", "PyYAML>=6"]
+
+[project.urls]
+"MedDeID on Hugging Face" = "https://huggingface.co/collections/stighellemans/meddeid"
+
+[project.optional-dependencies]
+train = [
+    "meddeid>=0.1,<0.2",
+    "torch>=2.2",
+    "transformers>=4.45,<5",
+    "safetensors>=0.4",
+    "scikit-learn>=1.4",
+    "numpy>=1.24",
+    "tqdm>=4.66",
+]
+dev = [
+    "pytest>=8",
+    "meddeid>=0.1,<0.2",
+    "torch>=2.2",
+    "transformers>=4.45,<5",
+    "safetensors>=0.4",
+    "scikit-learn>=1.4",
+    "numpy>=1.24",
+    "tqdm>=4.66",
+]
+
+[project.scripts]
+meddeid-train = "meddeid_training.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
