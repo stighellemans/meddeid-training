@@ -4,7 +4,7 @@ Training and export tools for MedDeID sequence-labeling models. Researchers can
 run one ordinary fit, while release workflows can separate epoch selection from
 the final full-data fit so a benchmark remains sealed during model selection.
 
-The [training and evaluation workflow](https://meddeid.github.io/workflows/train-and-evaluate/)
+The [training and evaluation workflow](https://stighellemans.github.io/meddeid.github.io/workflows/train-and-evaluate/)
 shows the cross-suite handoffs. This repository and its training protocol remain
 authoritative for configuration, fitting, refitting, and export.
 
