@@ -10,8 +10,13 @@ authoritative for configuration, fitting, refitting, and export.
 
 ## Installation
 
+`meddeid-training` and its `meddeid-eval` dependency are not on PyPI yet.
+Install both current public source releases:
+
 ```bash
-pip install 'meddeid-training[train]'
+git clone https://github.com/stighellemans/meddeid-eval.git
+git clone https://github.com/stighellemans/meddeid-training.git
+python -m pip install './meddeid-eval' './meddeid-training[train]'
 ```
 
 ## One-time training
