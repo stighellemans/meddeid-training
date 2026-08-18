@@ -1810,15 +1810,17 @@ def save_checkpoint(
 
 
 def plot_history(history: list[dict[str, Any]], plot_dir: Path) -> None:
-    """Save train-vs-val loss/F1 curves for BIO, entity-label, and span-level metrics."""
+    """Save readable loss and task-specific F1 curves as PNG and vector PDF."""
     if not history:
         return
 
     # Plotting is optional; training should not fail due to matplotlib/numpy conflicts.
     try:
         import matplotlib.pyplot as plt
-    except Exception as exc:
-        print(f"[plots] skipped: matplotlib unavailable ({exc})", flush=True)
+        from matplotlib import ticker
+        from meddeid_eval.plotting import clean_axes, plotting_style, save_figure
+    except Exception as exc:  # noqa: BLE001 - diagnostics must never abort training
+        print(f"[plots] skipped: plotting support unavailable ({exc})", flush=True)
         return
     plot_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1827,43 +1829,97 @@ def plot_history(history: list[dict[str, Any]], plot_dir: Path) -> None:
     tr_eval_loss = [row.get("train_eval_loss", float("nan")) for row in history]
     val_loss = [row["val_loss"] for row in history]
 
-    train_bio_f1 = [row.get("train_bio_token_f1_macro", float("nan")) for row in history]
+    train_bio_f1 = [
+        row.get("train_bio_token_f1_macro", float("nan")) for row in history
+    ]
     val_bio_f1 = [row.get("val_bio_token_f1_macro", float("nan")) for row in history]
     train_label_f1 = [
         row.get("train_label_token_f1_macro", float("nan")) for row in history
     ]
-    val_label_f1 = [row.get("val_label_token_f1_macro", float("nan")) for row in history]
+    val_label_f1 = [
+        row.get("val_label_token_f1_macro", float("nan")) for row in history
+    ]
     train_entity_f1 = [row.get("train_entity_f1", float("nan")) for row in history]
     val_entity_f1 = [row.get("val_entity_f1", float("nan")) for row in history]
 
-    plt.figure(figsize=(8, 5))
-    plt.plot(epochs, tr_loss, marker="o", label="train_loss")
-    plt.plot(epochs, tr_eval_loss, marker="o", label="train_eval_loss")
-    plt.plot(epochs, val_loss, marker="o", label="val_loss")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.title("Train vs Validation Loss")
-    plt.grid(True)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(plot_dir / "loss_curve.png", dpi=140)
-    plt.close()
+    with plotting_style():
+        fig, ax = plt.subplots(figsize=(7.2, 4.3), constrained_layout=True)
+        ax.plot(
+            epochs,
+            tr_loss,
+            marker="o",
+            markersize=3.5,
+            linewidth=1.7,
+            color="#2C7593",
+            label="Training objective",
+        )
+        ax.plot(
+            epochs,
+            tr_eval_loss,
+            marker="o",
+            markersize=3.5,
+            linewidth=1.5,
+            color="#56B4E9",
+            label="Training-set evaluation",
+        )
+        ax.plot(
+            epochs,
+            val_loss,
+            marker="o",
+            markersize=3.5,
+            linewidth=1.7,
+            color="#E67924",
+            label="Validation",
+        )
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("Loss (lower is better)")
+        ax.set_title("Training and validation loss", loc="left", pad=10)
+        clean_axes(ax, grid_axis="both")
+        ax.legend(frameon=False)
+        save_figure(fig, plot_dir, "loss_curve", dpi=300)
 
-    plt.figure(figsize=(8, 5))
-    plt.plot(epochs, train_bio_f1, marker="o", label="train_bio_token_f1_macro")
-    plt.plot(epochs, val_bio_f1, marker="o", label="val_bio_token_f1_macro")
-    plt.plot(epochs, train_label_f1, marker="o", label="train_label_token_f1_macro")
-    plt.plot(epochs, val_label_f1, marker="o", label="val_label_token_f1_macro")
-    plt.plot(epochs, train_entity_f1, marker="o", label="train_entity_f1")
-    plt.plot(epochs, val_entity_f1, marker="o", label="val_entity_f1")
-    plt.xlabel("Epoch")
-    plt.ylabel("F1")
-    plt.title("Train vs Validation BIO/Entity F1 Metrics")
-    plt.grid(True)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(plot_dir / "f1_curve.png", dpi=140)
-    plt.close()
+        fig, axes = plt.subplots(
+            ncols=3,
+            figsize=(10.2, 3.6),
+            sharex=True,
+            sharey=True,
+            constrained_layout=True,
+        )
+        panels = [
+            ("BIO token macro F1", train_bio_f1, val_bio_f1),
+            ("Entity-label token macro F1", train_label_f1, val_label_f1),
+            ("Entity span F1", train_entity_f1, val_entity_f1),
+        ]
+        for index, (title, training_values, validation_values) in enumerate(panels):
+            ax = axes[index]
+            ax.plot(
+                epochs,
+                training_values,
+                marker="o",
+                markersize=3.5,
+                linewidth=1.6,
+                color="#2C7593",
+                label="Training",
+            )
+            ax.plot(
+                epochs,
+                validation_values,
+                marker="o",
+                markersize=3.5,
+                linewidth=1.6,
+                color="#E67924",
+                label="Validation",
+            )
+            ax.set_title(title, loc="left", fontsize=10, pad=8)
+            ax.set_xlabel("Epoch")
+            ax.yaxis.set_major_formatter(ticker.PercentFormatter(xmax=1.0, decimals=0))
+            ax.set_ylim(0, 1.02)
+            clean_axes(ax, grid_axis="both")
+        axes[0].set_ylabel("F1 (higher is better)")
+        handles, labels = axes[0].get_legend_handles_labels()
+        fig.legend(handles, labels, loc="outside lower center", ncol=2, frameon=False)
+        fig.suptitle("Training and validation F1", fontsize=12, fontweight="bold")
+        save_figure(fig, plot_dir, "f1_curve", dpi=300)
 
 
 def main() -> None:

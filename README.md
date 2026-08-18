@@ -30,6 +30,11 @@ meddeid-train fit \
 Use `--epochs N` to override the maximum configured epoch count. The resulting
 checkpoint is `runs/fit/checkpoints/best.pt`.
 
+Install `meddeid-training[plots]` together with the training dependencies to
+guarantee Matplotlib availability. Every run then writes readable loss and
+task-specific F1 small multiples under `RUN/plots/` as both PNG and searchable
+vector PDF. Plotting remains optional and never makes training fail.
+
 ## Publication protocol
 
 1. Create a held-out validation subset from the 6,493-document synthetic

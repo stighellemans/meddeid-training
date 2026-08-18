@@ -3,7 +3,7 @@ message: "If you use MedDeID training, cite this software and the MedDeID datase
 title: "MedDeID training"
 abstract: "Training, selection, refit, and bundle export tools for MedDeID."
 type: software
-version: "0.1.1"
+version: "0.1.2"
 date-released: 2026-08-17
 authors:
   - family-names: Hellemans

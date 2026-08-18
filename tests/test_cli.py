@@ -9,6 +9,7 @@ from meddeid_core.taxonomy import BERT_ENTITY_LABELS
 from meddeid_training import DEFAULT_INITIAL_MODEL
 from meddeid_training.cli import selected_epochs, training_command
 from meddeid_training.train_script import (
+    plot_history,
     read_jsonl,
     resolve_model_initialization,
     select_device,
@@ -160,6 +161,46 @@ def test_character_decoder_collapses_duplicate_token_boundaries() -> None:
     )
 
     assert spans == [{"begin": 4, "end": 5, "label": "Date", "text": "X"}]
+
+
+def test_plot_history_writes_readable_raster_and_vector_figures(tmp_path) -> None:
+    pytest.importorskip("matplotlib")
+    history = [
+        {
+            "epoch": 1,
+            "train_loss": 0.8,
+            "train_eval_loss": 0.7,
+            "val_loss": 0.75,
+            "train_bio_token_f1_macro": 0.70,
+            "val_bio_token_f1_macro": 0.65,
+            "train_label_token_f1_macro": 0.60,
+            "val_label_token_f1_macro": 0.55,
+            "train_entity_f1": 0.50,
+            "val_entity_f1": 0.45,
+        },
+        {
+            "epoch": 2,
+            "train_loss": 0.5,
+            "train_eval_loss": 0.45,
+            "val_loss": 0.55,
+            "train_bio_token_f1_macro": 0.82,
+            "val_bio_token_f1_macro": 0.78,
+            "train_label_token_f1_macro": 0.74,
+            "val_label_token_f1_macro": 0.69,
+            "train_entity_f1": 0.68,
+            "val_entity_f1": 0.62,
+        },
+    ]
+
+    plot_history(history, tmp_path)
+
+    assert {path.name for path in tmp_path.iterdir()} == {
+        "loss_curve.png",
+        "loss_curve.pdf",
+        "f1_curve.png",
+        "f1_curve.pdf",
+    }
+    assert all(path.stat().st_size > 1_000 for path in tmp_path.iterdir())
 
 
 def test_explicit_plain_model_directory_is_treated_as_base_encoder(tmp_path) -> None:
