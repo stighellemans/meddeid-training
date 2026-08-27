@@ -29,6 +29,7 @@ from transformers import (
 )
 
 from . import DEFAULT_INITIAL_MODEL
+from .evaluation_reports import build_evaluation_slice_report
 
 def parse_args() -> argparse.Namespace:
     """Parse CLI arguments for data paths, model settings, and training hyperparameters."""
@@ -58,8 +59,14 @@ def parse_args() -> argparse.Namespace:
         "--model-revision",
         help="Immutable Hub revision for the existing model or explicit base encoder",
     )
-    parser.add_argument("--language-profile", required=True)
-    parser.add_argument("--language-profile-version", required=True)
+    parser.add_argument(
+        "--language-profile",
+        action="append",
+        default=[],
+        help=(
+            "Repeatable locale supported by the shared model, for example nl-BE or nl-NL."
+        ),
+    )
     parser.add_argument("--output-dir", default=os.environ.get("JOB_OUT", "output"))
     parser.add_argument("--ckpt-dir", default=os.environ.get("JOB_CKPT", "checkpoints"))
 
@@ -169,6 +176,14 @@ def parse_args() -> argparse.Namespace:
             "selection so the external test set remains completely withheld."
         ),
     )
+    parser.add_argument(
+        "--skip-train-evaluation",
+        action="store_true",
+        help=(
+            "Skip repeated full training-split inference. Training losses are still "
+            "recorded; validation and test evaluation are unchanged."
+        ),
+    )
     parser.add_argument("--label-key", default="label")
     parser.add_argument(
         "--entity-labels",
@@ -244,6 +259,69 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
                 raise ValueError(f"{path}:{line_number}: invalid canonical record: {rendered}")
             rows.append(row)
     return rows
+
+
+def resolve_language_profile_refs(args: argparse.Namespace) -> list[dict[str, str]]:
+    """Resolve repeatable, unversioned locale selections."""
+    refs = list(args.language_profile or [])
+    if not refs:
+        raise ValueError("provide at least one --language-profile PROFILE")
+
+    profiles: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for ref in refs:
+        profile_ref = str(ref).strip().replace("_", "-")
+        if "@" in profile_ref:
+            raise ValueError(f"language profile must not contain a version: {ref!r}")
+        profile_id = profile_ref.strip()
+        if not profile_id:
+            raise ValueError(f"invalid language profile reference: {ref!r}")
+        key = profile_id.lower()
+        if key in seen:
+            raise ValueError(f"duplicate language profile reference: {profile_id}")
+        seen.add(key)
+        profiles.append({"profile_id": profile_id})
+    return profiles
+
+
+def validate_row_language_profiles(
+    rows: list[dict[str, Any]], profiles: list[dict[str, str]]
+) -> dict[str, int]:
+    """Reject cross-locale training data and count support for each declared profile."""
+    allowed = {item["profile_id"]: 0 for item in profiles}
+    require_metadata = len(profiles) > 1
+    for index, row in enumerate(rows, 1):
+        metadata = row.get("metadata") or {}
+        lang = str(metadata.get("lang") or "").strip().replace("_", "-")
+        generation_ref = str(metadata.get("generation_profile") or "").strip().replace("_", "-")
+        if generation_ref:
+            if "@" in generation_ref:
+                raise ValueError(f"row {index} metadata.generation_profile must be unversioned")
+            profile_id = generation_ref
+        elif lang and len(profiles) == 1:
+            profile_id = lang
+        elif require_metadata:
+            raise ValueError(
+                f"row {index} is missing metadata.generation_profile for combined-profile training"
+            )
+        else:
+            continue
+        if profile_id not in allowed:
+            supported = ", ".join(allowed)
+            raise ValueError(
+                f"row {index} declares unsupported language profile {profile_id}; "
+                f"expected one of: {supported}"
+            )
+        if lang and lang != profile_id:
+            raise ValueError(
+                f"row {index} metadata.lang={lang!r} conflicts with "
+                f"metadata.generation_profile={profile_id}"
+            )
+        allowed[profile_id] += 1
+    if require_metadata and any(count == 0 for count in allowed.values()):
+        missing = [profile_id for profile_id, count in allowed.items() if count == 0]
+        raise ValueError(f"combined-profile data has no documents for: {', '.join(missing)}")
+    return allowed
 
 
 def _doc_identity(row: dict[str, Any]) -> str:
@@ -611,8 +689,7 @@ class ModelInitialization:
     transformer_revision: str | None
     bio_labels: tuple[str, ...] | None = None
     entity_labels: tuple[str, ...] | None = None
-    profile_id: str | None = None
-    profile_version: str | None = None
+    profile_ids: tuple[str, ...] = ()
 
 
 def resolve_model_initialization(
@@ -730,8 +807,7 @@ def resolve_model_initialization(
         transformer_revision=None,
         bio_labels=tuple(bundle.bio_labels),
         entity_labels=tuple(bundle.entity_labels),
-        profile_id=bundle.postprocess.profile_id,
-        profile_version=bundle.postprocess.profile_version,
+        profile_ids=tuple(item.profile_id for item in bundle.postprocess.profiles),
     )
 
 
@@ -1330,6 +1406,7 @@ def evaluate(
     log_interval: int = 0,
     use_tqdm: bool = True,
     compute_span_edit_metrics: bool = False,
+    compute_slice_metrics: bool = False,
 ) -> dict[str, Any]:
     """
     Evaluate model performance with dual heads on a windowed dataset.
@@ -1459,6 +1536,7 @@ def evaluate(
     span_edit_add_ops = 0
     span_edit_edit_ops = 0
     span_edit_delete_ops = 0
+    document_predictions: list[list[dict[str, Any]]] = []
 
     for doc_idx, gold_typed_ids in enumerate(dataset.doc_gold_typed_ids):
         counts = doc_counts[doc_idx]
@@ -1506,13 +1584,16 @@ def evaluate(
         pred_spans_total += len(pred_spans)
         correct_spans_total += len(gold_spans & pred_spans)
 
-        if compute_span_edit_metrics:
+        if compute_span_edit_metrics or compute_slice_metrics:
             pred_char_spans = typed_ids_to_char_spans(
                 tag_ids=pred_typed_ids,
                 id2label=typed_id2label,
                 offsets=dataset.doc_offsets[doc_idx],
                 text=dataset.doc_texts[doc_idx],
             )
+            if compute_slice_metrics:
+                document_predictions.append(pred_char_spans)
+        if compute_span_edit_metrics:
             span_edit_counts = evaluate_span_edits_counts(
                 pred_spans=pred_char_spans,
                 gold_spans=dataset.doc_gold_char_spans[doc_idx],
@@ -1618,6 +1699,11 @@ def evaluate(
                 "span_edit_edit_ops": int(span_edit_edit_ops),
                 "span_edit_delete_ops": int(span_edit_delete_ops),
             }
+        )
+    if compute_slice_metrics:
+        metrics["evaluation_slices"] = build_evaluation_slice_report(
+            dataset.records,
+            document_predictions,
         )
 
     log_line = (
@@ -1786,6 +1872,8 @@ def train_one_epoch(
         "label_loss": float(mean_label_loss),
         # Alias for clarity: second-stage entity-type loss (no third head).
         "entity_type_loss": float(mean_label_loss),
+        "microbatches": int(steps),
+        "optimizer_steps": int(optimizer_steps),
     }
 
 
@@ -1794,6 +1882,38 @@ def metric_for_selection(metrics: dict[str, Any], metric_name: str) -> float:
     if metric_name == "val_loss":
         return -float(metrics["loss"])
     return float(metrics[metric_name])
+
+
+@dataclass(frozen=True)
+class ValidationSelectionDecision:
+    """Independent decisions for checkpointing and stopping patience."""
+
+    checkpoint_improved: bool
+    patience_improved: bool
+
+
+def validation_selection_decision(
+    score: float,
+    *,
+    absolute_best_score: float | None,
+    patience_reference_score: float | None,
+    min_delta: float,
+) -> ValidationSelectionDecision:
+    """Keep the absolute best while applying ``min_delta`` only to patience."""
+
+    if min_delta < 0:
+        raise ValueError("min_delta must be >= 0")
+    if not math.isfinite(score):
+        return ValidationSelectionDecision(False, False)
+    return ValidationSelectionDecision(
+        checkpoint_improved=(
+            absolute_best_score is None or score > absolute_best_score
+        ),
+        patience_improved=(
+            patience_reference_score is None
+            or score > patience_reference_score + min_delta
+        ),
+    )
 
 
 def save_checkpoint(
@@ -1930,10 +2050,14 @@ def main() -> None:
     and applies early stopping on the selected validation metric.
     """
     args = parse_args()
+    language_profiles = resolve_language_profile_refs(args)
+    args.language_profiles = language_profiles
     if args.epochs <= 0:
         raise ValueError("epochs must be > 0")
     if args.early_stopping_patience < 0:
         raise ValueError("early_stopping_patience must be >= 0")
+    if args.early_stopping_min_delta < 0:
+        raise ValueError("early_stopping_min_delta must be >= 0")
     if args.early_stopping_min_epochs <= 0:
         raise ValueError("early_stopping_min_epochs must be > 0")
     if args.grad_accum_steps <= 0:
@@ -1987,6 +2111,8 @@ def main() -> None:
     )
 
     all_rows = train_rows + val_rows + test_rows
+    language_profile_docs = validate_row_language_profiles(all_rows, language_profiles)
+    print(f"[data] language profiles={language_profile_docs}", flush=True)
     entity_types = resolve_entity_types(args, all_rows)
     if not entity_types:
         raise ValueError(
@@ -2049,14 +2175,10 @@ def main() -> None:
             raise ValueError(
                 "initial model entity labels do not match the configured training head"
             )
-        if initialization.profile_id != args.language_profile:
+        expected_profiles = tuple(item["profile_id"] for item in language_profiles)
+        if set(initialization.profile_ids) != set(expected_profiles):
             raise ValueError(
-                "initial model language profile does not match --language-profile"
-            )
-        if initialization.profile_version != args.language_profile_version:
-            raise ValueError(
-                "initial model language profile version does not match "
-                "--language-profile-version"
+                "initial model language profiles do not match --language-profile selections"
             )
     args.initialization_mode = initialization.mode
     args.base_encoder = initialization.base_encoder
@@ -2189,10 +2311,76 @@ def main() -> None:
     history = []
     best_payload = None
     best_score = -float("inf")
+    patience_reference_score: float | None = None
+    patience_reference_epoch: int | None = None
     global_epoch = 0
     epochs_without_improvement = 0
     stopped_early = False
     early_stop_reason = None
+
+    def consider_validation_score(
+        score: float, val_metrics: dict[str, Any]
+    ) -> ValidationSelectionDecision:
+        """Update absolute checkpoint and patience reference independently."""
+
+        nonlocal best_payload
+        nonlocal best_score
+        nonlocal epochs_without_improvement
+        nonlocal patience_reference_epoch
+        nonlocal patience_reference_score
+
+        if args.final_epoch_is_best:
+            return ValidationSelectionDecision(False, False)
+        decision = validation_selection_decision(
+            score,
+            absolute_best_score=(best_score if best_payload is not None else None),
+            patience_reference_score=patience_reference_score,
+            min_delta=args.early_stopping_min_delta,
+        )
+        if decision.checkpoint_improved:
+            best_score = score
+            best_payload = {
+                "epoch": global_epoch,
+                "state_dict": {
+                    key: value.detach().cpu().clone()
+                    for key, value in model.state_dict().items()
+                },
+                "val_metrics": val_metrics,
+            }
+            save_checkpoint(
+                ckpt_dir / "best.pt", model, args, global_epoch, val_metrics
+            )
+        if decision.patience_improved:
+            patience_reference_score = score
+            patience_reference_epoch = global_epoch
+            epochs_without_improvement = 0
+        elif global_epoch >= early_stopping_start_epoch:
+            epochs_without_improvement += 1
+        return decision
+
+    def training_metrics_or_placeholder() -> dict[str, float]:
+        if args.skip_train_evaluation:
+            return {
+                "loss": float("nan"),
+                "bio_token_f1_macro": float("nan"),
+                "label_token_f1_macro": float("nan"),
+                "entity_f1": float("nan"),
+                "token_f1_macro": float("nan"),
+            }
+        return evaluate(
+            model,
+            train_eval_loader,
+            train_dataset,
+            typed_id2label=typed_id2label,
+            typed_label2id=typed_label2id,
+            bio_id2label=bio_id2label,
+            bio_label2id=bio_label2id,
+            entity_id2label=entity_id2label,
+            device=device,
+            split_name="train",
+            log_interval=0,
+            use_tqdm=not args.disable_tqdm,
+        )
 
     if warmup_epochs > 0:
         set_backbone_trainable(model, False)
@@ -2226,20 +2414,7 @@ def main() -> None:
                 log_interval=args.log_interval,
                 use_tqdm=not args.disable_tqdm,
             )
-            train_eval_metrics = evaluate(
-                model,
-                train_eval_loader,
-                train_dataset,
-                typed_id2label=typed_id2label,
-                typed_label2id=typed_label2id,
-                bio_id2label=bio_id2label,
-                bio_label2id=bio_label2id,
-                entity_id2label=entity_id2label,
-                device=device,
-                split_name="train",
-                log_interval=0,
-                use_tqdm=not args.disable_tqdm,
-            )
+            train_eval_metrics = training_metrics_or_placeholder()
             val_metrics = evaluate(
                 model,
                 val_loader,
@@ -2262,6 +2437,8 @@ def main() -> None:
                     "train_bio_loss": train_stats["bio_loss"],
                     "train_label_loss": train_stats["label_loss"],
                     "train_entity_type_loss": train_stats["entity_type_loss"],
+                    "train_microbatches": train_stats["microbatches"],
+                    "optimizer_steps": train_stats["optimizer_steps"],
                     "train_eval_loss": train_eval_metrics["loss"],
                     "val_loss": val_metrics["loss"],
                     "train_bio_token_f1_macro": train_eval_metrics[
@@ -2286,29 +2463,14 @@ def main() -> None:
                     f"[warn] non-finite score for metric {args.save_best_metric} at epoch {global_epoch}: {score}",
                     flush=True,
                 )
-            improved = False
-            if not args.final_epoch_is_best:
-                if best_payload is None:
-                    improved = True
-                elif score_is_finite and score > (best_score + args.early_stopping_min_delta):
-                    improved = True
-            if improved:
-                if score_is_finite:
-                    best_score = score
-                epochs_without_improvement = 0
-                best_payload = {
-                    "epoch": global_epoch,
-                    "state_dict": {
-                        k: v.detach().cpu().clone()
-                        for k, v in model.state_dict().items()
-                    },
-                    "val_metrics": val_metrics,
+            decision = consider_validation_score(score, val_metrics)
+            history[-1].update(
+                {
+                    "absolute_checkpoint_improved": decision.checkpoint_improved,
+                    "patience_reference_improved": decision.patience_improved,
+                    "epochs_without_meaningful_improvement": epochs_without_improvement,
                 }
-                save_checkpoint(
-                    ckpt_dir / "best.pt", model, args, global_epoch, val_metrics
-                )
-            elif global_epoch >= early_stopping_start_epoch:
-                epochs_without_improvement += 1
+            )
 
             print(
                 f"[epoch {global_epoch}/{args.epochs}] phase=head_warmup "
@@ -2371,20 +2533,7 @@ def main() -> None:
                 log_interval=args.log_interval,
                 use_tqdm=not args.disable_tqdm,
             )
-            train_eval_metrics = evaluate(
-                model,
-                train_eval_loader,
-                train_dataset,
-                typed_id2label=typed_id2label,
-                typed_label2id=typed_label2id,
-                bio_id2label=bio_id2label,
-                bio_label2id=bio_label2id,
-                entity_id2label=entity_id2label,
-                device=device,
-                split_name="train",
-                log_interval=0,
-                use_tqdm=not args.disable_tqdm,
-            )
+            train_eval_metrics = training_metrics_or_placeholder()
             val_metrics = evaluate(
                 model,
                 val_loader,
@@ -2407,6 +2556,8 @@ def main() -> None:
                     "train_bio_loss": train_stats["bio_loss"],
                     "train_label_loss": train_stats["label_loss"],
                     "train_entity_type_loss": train_stats["entity_type_loss"],
+                    "train_microbatches": train_stats["microbatches"],
+                    "optimizer_steps": train_stats["optimizer_steps"],
                     "train_eval_loss": train_eval_metrics["loss"],
                     "val_loss": val_metrics["loss"],
                     "train_bio_token_f1_macro": train_eval_metrics[
@@ -2431,29 +2582,14 @@ def main() -> None:
                     f"[warn] non-finite score for metric {args.save_best_metric} at epoch {global_epoch}: {score}",
                     flush=True,
                 )
-            improved = False
-            if not args.final_epoch_is_best:
-                if best_payload is None:
-                    improved = True
-                elif score_is_finite and score > (best_score + args.early_stopping_min_delta):
-                    improved = True
-            if improved:
-                if score_is_finite:
-                    best_score = score
-                epochs_without_improvement = 0
-                best_payload = {
-                    "epoch": global_epoch,
-                    "state_dict": {
-                        k: v.detach().cpu().clone()
-                        for k, v in model.state_dict().items()
-                    },
-                    "val_metrics": val_metrics,
+            decision = consider_validation_score(score, val_metrics)
+            history[-1].update(
+                {
+                    "absolute_checkpoint_improved": decision.checkpoint_improved,
+                    "patience_reference_improved": decision.patience_improved,
+                    "epochs_without_meaningful_improvement": epochs_without_improvement,
                 }
-                save_checkpoint(
-                    ckpt_dir / "best.pt", model, args, global_epoch, val_metrics
-                )
-            elif global_epoch >= early_stopping_start_epoch:
-                epochs_without_improvement += 1
+            )
 
             print(
                 f"[epoch {global_epoch}/{args.epochs}] phase=full_finetune "
@@ -2483,21 +2619,23 @@ def main() -> None:
                 )
                 break
 
-    final_train_metrics = evaluate(
-        model,
-        train_eval_loader,
-        train_dataset,
-        typed_id2label=typed_id2label,
-        typed_label2id=typed_label2id,
-        bio_id2label=bio_id2label,
-        bio_label2id=bio_label2id,
-        entity_id2label=entity_id2label,
-        device=device,
-        split_name="train_final",
-        log_interval=0,
-        use_tqdm=not args.disable_tqdm,
-        compute_span_edit_metrics=True,
-    )
+    final_train_metrics = None
+    if not args.skip_train_evaluation:
+        final_train_metrics = evaluate(
+            model,
+            train_eval_loader,
+            train_dataset,
+            typed_id2label=typed_id2label,
+            typed_label2id=typed_label2id,
+            bio_id2label=bio_id2label,
+            bio_label2id=bio_label2id,
+            entity_id2label=entity_id2label,
+            device=device,
+            split_name="train_final",
+            log_interval=0,
+            use_tqdm=not args.disable_tqdm,
+            compute_span_edit_metrics=True,
+        )
     final_val_metrics = evaluate(
         model,
         val_loader,
@@ -2512,9 +2650,13 @@ def main() -> None:
         log_interval=args.log_interval,
         use_tqdm=not args.disable_tqdm,
         compute_span_edit_metrics=True,
+        compute_slice_metrics=True,
     )
     final_test_metrics = None
-    if not args.skip_test_evaluation:
+    # A non-refit run may finish on a different epoch from the selected best
+    # checkpoint. Do not evaluate the sealed benchmark here and then again
+    # below; every run evaluates it at most once, on the deliverable model.
+    if not args.skip_test_evaluation and args.final_epoch_is_best:
         final_test_metrics = evaluate(
             model,
             test_loader,
@@ -2529,6 +2671,7 @@ def main() -> None:
             log_interval=args.log_interval,
             use_tqdm=not args.disable_tqdm,
             compute_span_edit_metrics=True,
+            compute_slice_metrics=True,
         )
 
     if not args.final_epoch_is_best:
@@ -2560,20 +2703,43 @@ def main() -> None:
 
     if best_payload is not None:
         model.load_state_dict(best_payload["state_dict"])
-    best_train_metrics = evaluate(
-        model,
-        train_eval_loader,
-        train_dataset,
-        typed_id2label=typed_id2label,
-        typed_label2id=typed_label2id,
-        bio_id2label=bio_id2label,
-        bio_label2id=bio_label2id,
-        entity_id2label=entity_id2label,
-        device=device,
-        split_name="train_best",
-        log_interval=0,
-        use_tqdm=not args.disable_tqdm,
-    )
+    best_val_metrics = final_val_metrics if args.final_epoch_is_best else None
+    if best_payload is not None and not args.final_epoch_is_best:
+        best_val_metrics = evaluate(
+            model,
+            val_loader,
+            val_dataset,
+            typed_id2label=typed_id2label,
+            typed_label2id=typed_label2id,
+            bio_id2label=bio_id2label,
+            bio_label2id=bio_label2id,
+            entity_id2label=entity_id2label,
+            device=device,
+            split_name="val_best",
+            log_interval=args.log_interval,
+            use_tqdm=not args.disable_tqdm,
+            compute_span_edit_metrics=True,
+            compute_slice_metrics=True,
+        )
+    best_train_metrics = None
+    if not args.skip_train_evaluation:
+        if args.final_epoch_is_best:
+            best_train_metrics = final_train_metrics
+        else:
+            best_train_metrics = evaluate(
+                model,
+                train_eval_loader,
+                train_dataset,
+                typed_id2label=typed_id2label,
+                typed_label2id=typed_label2id,
+                bio_id2label=bio_id2label,
+                bio_label2id=bio_label2id,
+                entity_id2label=entity_id2label,
+                device=device,
+                split_name="train_best",
+                log_interval=0,
+                use_tqdm=not args.disable_tqdm,
+            )
     best_test_metrics = final_test_metrics if args.final_epoch_is_best else None
     if not args.skip_test_evaluation and not args.final_epoch_is_best:
         best_test_metrics = evaluate(
@@ -2589,6 +2755,8 @@ def main() -> None:
             split_name="test_best",
             log_interval=args.log_interval,
             use_tqdm=not args.disable_tqdm,
+            compute_span_edit_metrics=True,
+            compute_slice_metrics=True,
         )
 
     train_metrics = {
@@ -2605,6 +2773,13 @@ def main() -> None:
         "epochs": args.epochs,
         "epochs_requested": args.epochs,
         "epochs_completed": global_epoch,
+        "document_exposures": len(train_rows) * global_epoch,
+        "microbatches_completed": sum(
+            int(row.get("train_microbatches", 0)) for row in history
+        ),
+        "optimizer_steps_completed": sum(
+            int(row.get("optimizer_steps", 0)) for row in history
+        ),
         "head_warmup_epochs": warmup_epochs,
         "train_windows": len(train_dataset),
         "val_windows": len(val_dataset),
@@ -2614,6 +2789,7 @@ def main() -> None:
             "val": len(val_rows),
             "test": len(test_rows),
         },
+        "language_profile_docs": language_profile_docs,
         "history": history,
         "best_metric": args.save_best_metric,
         "best_score": best_score,
@@ -2627,11 +2803,22 @@ def main() -> None:
             "triggered": stopped_early,
             "reason": early_stop_reason,
             "epochs_without_improvement": epochs_without_improvement,
+            "meaningful_improvement_reference_score": patience_reference_score,
+            "meaningful_improvement_reference_epoch": patience_reference_epoch,
+            "checkpoint_policy": "absolute metric maximum",
+            "patience_policy": "strict improvement greater than min_delta",
+        },
+        "protocol": {
+            "contract": "meddeid.selection-refit-benchmark.v1",
+            "selection_data": "train+validation only" if args.skip_test_evaluation else "fit mode",
+            "benchmark_evaluations": 0 if args.skip_test_evaluation else 1,
+            "benchmark_model": None if args.skip_test_evaluation else "deliverable best.pt",
         },
         "final_train": final_train_metrics,
         "final_val": final_val_metrics,
         "final_test": final_test_metrics,
         "best_train": best_train_metrics,
+        "best_val": best_val_metrics,
         "best_test": best_test_metrics,
         "config": vars(args),
     }
@@ -2643,11 +2830,7 @@ def main() -> None:
         "best_epoch": best_payload["epoch"] if best_payload is not None else None,
         "selection_metric": args.save_best_metric,
         "train": best_train_metrics,
-        "validation": (
-            best_payload["val_metrics"]
-            if best_payload is not None
-            else final_val_metrics
-        ),
+        "validation": best_val_metrics or final_val_metrics,
         "test": best_test_metrics,
         "final": {
             "train": final_train_metrics,

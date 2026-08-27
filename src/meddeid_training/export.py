@@ -7,6 +7,17 @@ from typing import Any
 from meddeid_core.taxonomy import BERT_ENTITY_LABELS, bio_labels
 
 
+def _stable_profile_id(value: Any) -> str:
+    profile_id = str(value).strip().replace("_", "-")
+    if not profile_id:
+        raise ValueError("model export requires a non-empty language profile ID")
+    if "@" in profile_id:
+        raise ValueError(
+            f"model export requires an unversioned language profile ID: {profile_id!r}"
+        )
+    return profile_id
+
+
 def _load_run_metadata(checkpoint: Path, run_metadata: str | Path | None) -> tuple[Path, dict[str, Any]]:
     path = Path(run_metadata).expanduser().resolve() if run_metadata else checkpoint.parent.parent / "train_metrics.json"
     if not path.is_file():
@@ -84,8 +95,16 @@ def export_bundle(
     run_encoder = str(resolved.get("base_encoder") or resolved["model_name"])
     run_max_length = int(resolved["max_length"])
     run_overlap = int(resolved["overlap"])
-    profile_id = str(resolved["language_profile"])
-    profile_version = str(resolved["language_profile_version"])
+    profile_items = resolved.get("language_profiles")
+    if profile_items:
+        profiles = [
+            {"profile_id": _stable_profile_id(item["profile_id"])}
+            for item in profile_items
+        ]
+    else:
+        profiles = [{
+            "profile_id": _stable_profile_id(resolved["language_profile"]),
+        }]
     conflicts = {
         "base_encoder": (base_encoder, run_encoder),
         "max_length": (max_length, run_max_length),
@@ -135,7 +154,10 @@ def export_bundle(
         "tokenizer_path": ".",
         "labels": {"bio": list(bio_labels()), "entity": list(BERT_ENTITY_LABELS)},
         "inference": {"max_length": max_length, "overlap": overlap, "min_entity_score": 0.0},
-        "postprocess": {"profile_id": profile_id, "profile_version": profile_version},
+        "postprocess": {
+            "profiles": profiles,
+            "profile_selection": "bundle_default" if len(profiles) == 1 else "explicit",
+        },
     }
     if checkpoint_epoch is not None:
         manifest["training"] = {"checkpoint_epoch": int(checkpoint_epoch)}

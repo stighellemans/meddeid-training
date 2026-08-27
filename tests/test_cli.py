@@ -11,16 +11,18 @@ from meddeid_training.cli import selected_epochs, training_command
 from meddeid_training.train_script import (
     plot_history,
     read_jsonl,
+    resolve_language_profile_refs,
     resolve_model_initialization,
     select_device,
     typed_ids_to_char_spans,
+    validate_row_language_profiles,
+    validation_selection_decision,
 )
 
 
 CONFIG = {
     "model_name": "example/existing-meddeid-model",
     "language_profile": "nl-BE",
-    "language_profile_version": "1",
     "epochs": 9,
     "head_warmup_epochs": 2,
     "encoder_lr": 3e-5,
@@ -42,6 +44,43 @@ CONFIG = {
 
 def test_selected_epoch_is_already_one_based() -> None:
     assert selected_epochs({"best_epoch": 17}) == 17
+
+
+def test_standard_protocol_caps_selection_and_refit_at_thirty_epochs(tmp_path) -> None:
+    with pytest.raises(ValueError, match="between 1 and 30"):
+        selected_epochs({"best_epoch": 31})
+    with pytest.raises(ValueError, match="between 1 and 30"):
+        training_command(
+            {**CONFIG, "epochs": 31},
+            Path(tmp_path / "data"),
+            Path(tmp_path / "run"),
+            mode="select-epochs",
+        )
+
+
+def test_absolute_best_checkpoint_is_independent_from_patience_min_delta() -> None:
+    first = validation_selection_decision(
+        0.9000,
+        absolute_best_score=None,
+        patience_reference_score=None,
+        min_delta=0.001,
+    )
+    small_gain = validation_selection_decision(
+        0.9005,
+        absolute_best_score=0.9000,
+        patience_reference_score=0.9000,
+        min_delta=0.001,
+    )
+    meaningful_gain = validation_selection_decision(
+        0.9011,
+        absolute_best_score=0.9005,
+        patience_reference_score=0.9000,
+        min_delta=0.001,
+    )
+
+    assert first.checkpoint_improved and first.patience_improved
+    assert small_gain.checkpoint_improved and not small_gain.patience_improved
+    assert meaningful_gain.checkpoint_improved and meaningful_gain.patience_improved
 
 
 def test_selection_forwards_release_config_and_withholds_benchmark(tmp_path) -> None:
@@ -152,6 +191,63 @@ def test_base_encoder_initialization_requires_explicit_config(tmp_path) -> None:
     assert "--from-base-encoder" in command
 
 
+def test_combined_profiles_are_forwarded_as_explicit_locales(tmp_path) -> None:
+    config = {
+        **CONFIG,
+        "language_profiles": ["en-GB", "en-US"],
+    }
+    config.pop("language_profile")
+    command = training_command(
+        config,
+        Path(tmp_path / "data"),
+        Path(tmp_path / "run"),
+        mode="select-epochs",
+    )
+    refs = [
+        command[index + 1]
+        for index, value in enumerate(command)
+        if value == "--language-profile"
+    ]
+    assert refs == ["en-GB", "en-US"]
+    assert command.count("--language-profile") == 2
+
+
+def test_combined_profile_data_requires_and_checks_each_locale() -> None:
+    profiles = [
+        {"profile_id": "en-GB"},
+        {"profile_id": "en-US"},
+    ]
+    rows = [
+        {"metadata": {"lang": "en-GB", "generation_profile": "en-GB"}},
+        {"metadata": {"lang": "en-US", "generation_profile": "en-US"}},
+    ]
+    assert validate_row_language_profiles(rows, profiles) == {
+        "en-GB": 1,
+        "en-US": 1,
+    }
+    with pytest.raises(ValueError, match="unsupported language profile"):
+        validate_row_language_profiles(
+            [*rows, {"metadata": {"lang": "nl-BE", "generation_profile": "nl-BE"}}],
+            profiles,
+        )
+    with pytest.raises(ValueError, match="must be unversioned"):
+        validate_row_language_profiles(
+            [{"metadata": {"lang": "en-GB", "generation_profile": "en-GB@1"}}],
+            profiles,
+        )
+
+
+def test_profile_ref_resolution_rejects_versions_and_missing_profiles() -> None:
+    from argparse import Namespace
+
+    with pytest.raises(ValueError, match="must not contain a version"):
+        resolve_language_profile_refs(
+            Namespace(language_profile=["en-GB@7"])
+        )
+    with pytest.raises(ValueError, match="at least one"):
+        resolve_language_profile_refs(Namespace(language_profile=[]))
+
+
 def test_character_decoder_collapses_duplicate_token_boundaries() -> None:
     spans = typed_ids_to_char_spans(
         tag_ids=[1, 2],
@@ -250,8 +346,8 @@ def test_existing_bundle_initialization_restores_heads_and_provenance(tmp_path) 
                     "min_entity_score": 0.0,
                 },
                 "postprocess": {
-                    "profile_id": "nl-BE",
-                    "profile_version": "1",
+                    "profiles": [{"profile_id": "nl-BE"}],
+                    "profile_selection": "bundle_default",
                 },
             }
         ),

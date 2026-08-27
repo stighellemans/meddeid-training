@@ -1,8 +1,9 @@
 model_name: stighellemans/meddeid-dutch-synth
 model_revision: 55c7858e91a53686bfd359d2653c8c6b8dabde89
 from_base_encoder: false
-language_profile: nl-BE
-language_profile_version: "1"
+language_profiles:
+  - nl-BE
+  - nl-NL
 max_length: 512
 overlap: 64
 train_batch_size: 8

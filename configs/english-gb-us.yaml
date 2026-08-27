@@ -1,0 +1,34 @@
+model_name: FacebookAI/roberta-base
+model_revision: e2da8e2f811d1448a5b465c236feacd80ffbac7b
+from_base_encoder: true
+language_profiles:
+  - en-GB
+  - en-US
+max_length: 512
+overlap: 64
+train_batch_size: 8
+eval_batch_size: 16
+grad_accum_steps: 2
+dataloader_num_workers: 0
+dataloader_prefetch_factor: 2
+disable_pin_memory: true
+disable_persistent_workers: true
+skip_train_evaluation: true
+disable_tqdm: true
+epochs: 30
+head_warmup_epochs: 0
+encoder_lr: 0.00002
+head_lr: 0.0001
+weight_decay: 0.01
+warmup_ratio: 0.01
+optimizer: adamw
+seed: 42
+save_best_metric: entity_f1
+early_stopping_patience: 3
+early_stopping_min_delta: 0.001
+early_stopping_min_epochs: 3
+label_key: label
+fp16: false
+gradient_checkpointing: false
+device: mps
+attn_implementation: eager

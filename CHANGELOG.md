@@ -3,6 +3,12 @@
 All notable user-visible changes are recorded here. This project follows
 semantic versioning while pre-1.0 versions may still refine public contracts.
 
+## [0.2.0] - 2026-08-27
+
+- Standardized profile-aware epoch selection and clean full-development refit,
+  with an explicit 30-epoch ceiling, absolute-best checkpoint policy, separate
+  early-stopping tolerance, and single benchmark access accounting.
+
 ## [0.1.2] - 2026-08-18
 
 - Reworked training plots into readable loss and task-specific F1 figures.

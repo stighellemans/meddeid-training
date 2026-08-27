@@ -11,9 +11,32 @@ import yaml
 from . import DEFAULT_INITIAL_MODEL
 from .export import export_bundle
 
+MAX_TRAINING_EPOCHS = 30
+
 
 def _append_value(command: list[str], flag: str, config: dict, key: str, default) -> None:
     command.extend([flag, str(config.get(key, default))])
+
+
+def _append_language_profiles(command: list[str], config: dict) -> None:
+    """Forward one or more locale profiles."""
+    profile_refs = config.get("language_profiles")
+    if profile_refs is not None:
+        if not isinstance(profile_refs, list) or not profile_refs:
+            raise ValueError("language_profiles must be a non-empty list")
+        if "language_profile" in config:
+            raise ValueError(
+                "configure language_profiles or language_profile, not both"
+            )
+        for profile_ref in profile_refs:
+            value = str(profile_ref).strip()
+            if "@" in value:
+                raise ValueError(f"language profile must not contain a version: {value!r}")
+            command.extend(["--language-profile", value])
+        return
+    if "language_profile" not in config:
+        raise ValueError("training config requires language_profiles or language_profile")
+    command.extend(["--language-profile", str(config["language_profile"])])
 
 
 def training_command(
@@ -26,6 +49,11 @@ def training_command(
 ) -> list[str]:
     if mode not in {"fit", "select-epochs", "refit"}:
         raise ValueError(f"unsupported training mode: {mode}")
+    resolved_epochs = int(epochs if epochs is not None else config.get("epochs", 8))
+    if not 1 <= resolved_epochs <= MAX_TRAINING_EPOCHS:
+        raise ValueError(
+            f"epochs must be between 1 and {MAX_TRAINING_EPOCHS}; got {resolved_epochs}"
+        )
     command = [
         sys.executable,
         "-m",
@@ -34,20 +62,19 @@ def training_command(
         "--output-dir", str(run.resolve()),
         "--ckpt-dir", str((run / "checkpoints").resolve()),
         "--model-name", str(config.get("model_name", DEFAULT_INITIAL_MODEL)),
-        "--language-profile", str(config["language_profile"]),
-        "--language-profile-version", str(config["language_profile_version"]),
         "--max-length", str(config.get("max_length", 512)),
         "--overlap", str(config.get("overlap", 64)),
         "--train-batch-size", str(config.get("train_batch_size", 8)),
         "--eval-batch-size", str(config.get("eval_batch_size", 8)),
         "--grad-accum-steps", str(config.get("grad_accum_steps", 2)),
-        "--epochs", str(epochs if epochs is not None else config.get("epochs", 8)),
+        "--epochs", str(resolved_epochs),
         "--optimizer", str(config.get("optimizer", "adamw")),
         "--seed", str(config.get("seed", 42)),
         "--label-key", str(config.get("label_key", "label")),
         "--device", str(config.get("device", "auto")),
         "--attn-implementation", str(config.get("attn_implementation", "auto")),
     ]
+    _append_language_profiles(command, config)
     if config.get("model_revision"):
         command.extend(["--model-revision", str(config["model_revision"])])
     _append_value(command, "--head-warmup-epochs", config, "head_warmup_epochs", 0)
@@ -96,6 +123,8 @@ def training_command(
         command.append("--disable-persistent-workers")
     if config.get("disable_tqdm", False):
         command.append("--disable-tqdm")
+    if config.get("skip_train_evaluation", False):
+        command.append("--skip-train-evaluation")
 
     if mode in {"fit", "select-epochs"}:
         _append_value(
@@ -118,8 +147,10 @@ def selected_epochs(metrics: dict) -> int:
     if value is None:
         raise ValueError("training metrics do not contain best_epoch")
     selected = int(value)
-    if selected < 1:
-        raise ValueError("best_epoch must be one-based and positive")
+    if not 1 <= selected <= MAX_TRAINING_EPOCHS:
+        raise ValueError(
+            f"best_epoch must be between 1 and {MAX_TRAINING_EPOCHS}"
+        )
     return selected
 
 
@@ -156,6 +187,7 @@ def main(argv: list[str] | None = None) -> int:
     export = sub.add_parser("export")
     export.add_argument("--checkpoint", required=True)
     export.add_argument("--output", required=True)
+    export.add_argument("--name", default="meddeid-dutch-synth")
     export.add_argument("--run-metadata")
     export.add_argument("--base-encoder")
     export.add_argument("--base-revision")
@@ -166,6 +198,7 @@ def main(argv: list[str] | None = None) -> int:
         print(export_bundle(
             args.checkpoint,
             args.output,
+            name=args.name,
             run_metadata=args.run_metadata,
             base_encoder=args.base_encoder,
             base_revision=args.base_revision,
@@ -197,3 +230,7 @@ def main(argv: list[str] | None = None) -> int:
         output = Path(args.selection_output or (Path(args.run) / "run.json"))
         output.write_text(json.dumps({"selected_epochs": selected, "selection_metrics": metrics}, indent=2) + "\n", encoding="utf-8")
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
