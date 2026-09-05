@@ -22,4 +22,4 @@ a public issue.
 
 The suite-wide architecture, data contract, privacy boundary, and compatibility
 matrix are documented at
-<https://stighellemans.github.io/meddeid.github.io/>.
+<https://stighellemans.github.io/meddeid/>.

@@ -3,8 +3,8 @@ message: "If you use MedDeID training, cite this software and the MedDeID datase
 title: "MedDeID training"
 abstract: "Training, selection, refit, and bundle export tools for MedDeID."
 type: software
-version: "0.2.0"
-date-released: 2026-08-27
+version: "0.2.1"
+date-released: 2026-09-05
 authors:
   - family-names: Hellemans
     given-names: Stig
@@ -25,7 +25,7 @@ authors:
     given-names: Kris
     orcid: https://orcid.org/0000-0002-8217-2564
 repository-code: "https://github.com/stighellemans/meddeid-training"
-url: "https://stighellemans.github.io/meddeid.github.io/"
+url: "https://stighellemans.github.io/meddeid/"
 license: AGPL-3.0-only
 identifiers:
   - type: doi

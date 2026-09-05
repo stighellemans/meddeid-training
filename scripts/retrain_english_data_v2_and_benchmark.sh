@@ -1,11 +1,14 @@
 #!/bin/zsh
 set -euo pipefail
 
-workspace="/Users/stighellemans/Desktop/DEID"
-training_root="$workspace/meddeid-suite/repos/meddeid-training"
-data_root="$workspace/meddeid-suite/repos/meddeid-data/data/english-production-v2/training-views"
-benchmarks_root="$workspace/english-deid-benchmarks"
-python_bin="$workspace/meddeid/.venv/bin/python"
+script_dir="${0:A:h}"
+training_root="${script_dir:h}"
+repos_root="${training_root:h}"
+suite_root="${repos_root:h}"
+local_root="${suite_root:h}"
+data_root="$repos_root/meddeid-data/data/english-production-v2/training-views"
+benchmarks_root="${MEDDEID_BENCHMARKS_ROOT:-$local_root/english-deid-benchmarks}"
+python_bin="${MEDDEID_PYTHON:-$suite_root/workspaces/manual-validation/.venv/bin/python}"
 run_root="$training_root/runs/english-gb-us-roberta-base-data-v2-final-20260826"
 config="$training_root/configs/english-gb-us.yaml"
 selection_data="$data_root/selection"
@@ -47,7 +50,7 @@ trap finish EXIT
 
 export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=false
-export PYTHONPATH="$training_root/src:$workspace/meddeid-suite/repos/meddeid-core/src:$workspace/meddeid-suite/repos/meddeid-eval/src:$workspace/meddeid-suite/repos/meddeid-language-en/src"
+export PYTHONPATH="$training_root/src:$repos_root/meddeid-core/src:$repos_root/meddeid-eval/src:$repos_root/meddeid-language-en/src"
 
 set_status "validating improved English training views"
 "$python_bin" - "$selection_data" "$refit_data" <<'PY'
@@ -214,7 +217,7 @@ for battery in meddeid-english-synthetic asq-phi technetium-i; do
   done
 
   set_status "benchmarking $battery"
-  PATH="$workspace/meddeid/.venv/bin:$PATH" \
+  PATH="${python_bin:h}:$PATH" \
     "$benchmarks_root/batteries/run_battery.sh" "$battery" \
       "${run_arguments[@]}" \
       --device mps

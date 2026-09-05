@@ -3,6 +3,15 @@
 All notable user-visible changes are recorded here. This project follows
 semantic versioning while pre-1.0 versions may still refine public contracts.
 
+## [Unreleased]
+
+## [0.2.1] - 2026-09-05
+
+- Made the English retraining and resume scripts portable across local suite
+  checkouts while retaining their existing experiment protocol.
+- Extended compatible dependency ranges to the coordinated MedDeID 0.3 and
+  evaluation 0.4 releases.
+
 ## [0.2.0] - 2026-08-27
 
 - Standardized profile-aware epoch selection and clean full-development refit,

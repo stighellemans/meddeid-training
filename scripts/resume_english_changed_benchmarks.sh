@@ -1,10 +1,14 @@
 #!/bin/zsh
 set -euo pipefail
 
-workspace="/Users/stighellemans/Desktop/DEID"
-benchmarks_root="$workspace/english-deid-benchmarks"
-training_run="$workspace/meddeid-suite/repos/meddeid-training/runs/english-gb-us-roberta-base-data-v2-final-20260826"
-python_bin="$workspace/meddeid/.venv/bin/python"
+script_dir="${0:A:h}"
+training_root="${script_dir:h}"
+repos_root="${training_root:h}"
+suite_root="${repos_root:h}"
+local_root="${suite_root:h}"
+benchmarks_root="${MEDDEID_BENCHMARKS_ROOT:-$local_root/english-deid-benchmarks}"
+training_run="$training_root/runs/english-gb-us-roberta-base-data-v2-final-20260826"
+python_bin="${MEDDEID_PYTHON:-$suite_root/workspaces/manual-validation/.venv/bin/python}"
 status_file="$training_run/pipeline-status.txt"
 log_file="$training_run/benchmark-resume.log"
 all_model_ids=(
@@ -105,7 +109,7 @@ clear_model() {
   rm -f -- "$prediction"
 }
 
-export PATH="$workspace/meddeid/.venv/bin:$PATH"
+export PATH="${python_bin:h}:$PATH"
 
 # The improved synthetic benchmark has already been rerun for every model.
 synthetic_root="$benchmarks_root/batteries/meddeid-english-synthetic/results/human-validated-v1"
