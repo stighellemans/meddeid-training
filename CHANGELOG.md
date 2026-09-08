@@ -5,6 +5,11 @@ semantic versioning while pre-1.0 versions may still refine public contracts.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-08
+
+- Updated the supported dependency line to MedDeID 0.4 and MedDeID Eval 0.5
+  for the coordinated suite release.
+
 ## [0.2.1] - 2026-09-05
 
 - Made the English retraining and resume scripts portable across local suite
