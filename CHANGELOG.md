@@ -5,6 +5,10 @@ semantic versioning while pre-1.0 versions may still refine public contracts.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-10
+
+- Include and expressly adopt the MedDeID Private Fine-Tuning Exception 1.0.
+
 ## [0.3.0] - 2026-09-08
 
 - Updated the supported dependency line to MedDeID 0.4 and MedDeID Eval 0.5

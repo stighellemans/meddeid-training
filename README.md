@@ -87,5 +87,9 @@ pytest
 
 ## Licence
 
-AGPL-3.0-only. Datasets and model artifacts are distributed separately under
-the terms stated with each artifact.
+AGPL-3.0-only with the MedDeID Private Fine-Tuning Exception, version 1.0. The
+Exception permits private training data and resulting private fine-tuned
+weights to remain confidential; MedDeID code modifications remain subject to
+AGPL-3.0-only. See `NOTICE` and
+`MEDDEID-PRIVATE-FINE-TUNING-EXCEPTION-1.0.txt`. Datasets and model artifacts
+are distributed separately under the terms stated with each artifact.
